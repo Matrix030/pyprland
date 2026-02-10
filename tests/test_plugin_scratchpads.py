@@ -460,9 +460,11 @@ async def test_send_to_dynamic_scratchpad(dynamic_scratchpads, subprocess_shell_
 
     call_set = gen_call_set(mocks.hyprctl.call_args_list)
 
+    # Should float the window and move to special workspace
     assert "setfloating address:0xDYNAMIC12345" in call_set
     assert "movetoworkspacesilent special:S-stash, address:0xDYNAMIC12345" in call_set
     
+    #Verify Internal state
     plugin = mocks.pyprland_instance.plugins["scratchpads"]
     stash = plugin.scratches.get("stash")
     assert stash.dynamic_window_addr == "0xDYNAMIC12345"
