@@ -274,6 +274,55 @@ async def test_attach_workspace_sanity(scratchpads, subprocess_shell_mock, serve
     assert moved_attached, "Attached window should be moved to scratchpad workspace on hide"
 
 
+DYNAMIC_WINDOW = {
+    "address": "0xDYNAMIC12345",
+    "mapped": True,
+    "hidden": False,
+    "at": [100, 100],
+    "size": [800, 600],
+    "workspace": {"id": 1, "name": "1"},
+    "floating": False,
+    "monitor": 0,
+    "class": "Alacritty",
+    "title": "terminal",
+    "initialClass": "Alacritty",
+    "initialTitle": "terminal",
+    "pid": 42,
+    "xwayland": False,
+    "pinned": False,
+    "fullscreen": False,
+    "fullscreenMode": 0,
+    "fakeFullscreen": False,
+    "grouped": [],
+    "swallowing": "0x0",
+    "focusHistoryID": 10,
+}
+
+
+DYNAMIC_WINDOW_2 = {
+    "address": "0xDYNAMIC67890",
+    "mapped": True,
+    "hidden": False,
+    "at": [200, 200],
+    "size": [900, 700],
+    "workspace": {"id": 1, "name": "1"},
+    "floating": True,
+    "monitor": 0,
+    "class": "Firefox",
+    "title": "browser",
+    "initialClass": "Firefox",
+    "initialTitle": "browser",
+    "pid": 43,
+    "xwayland": False,
+    "pinned": False,
+    "fullscreen": False,
+    "fullscreenMode": 0,
+    "fakeFullscreen": False,
+    "grouped": [],
+    "swallowing": "0x0",
+    "focusHistoryID": 11,
+}
+
 CLIENT_CONFIG = [
     {
         "address": "0x12345677890",
@@ -533,4 +582,62 @@ async def test_send_floating_preserves_state(dynamic_scratpads, sybprocess_shell
     assert stash.dynamic_window_addr == ""
 
 
+@pytest.mark.asyncio
+async def test_send_rejects_command_based_window(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    mocks.json_commands_result["clients"] = CLIENT_CONFIG
+
+    # Start the command-based scratchpad
+    await mocks.pypr("toggle term")
+    await _send_window_events()
+    await asyncio.sleep(0.1)
+
+    # Focus the term scratchpad window
+    await mocks.send_event("activewindowv2>>1234567890")
+    await asyncio.sleep(0.5)
+
+    mocks.hyprctl.reset_mock()
+    await mocks.pypr("send stash")
+    await asyncio.sleep(0.1)
+
+    # Should get error notification
+    found_error = False
+    for call in mocks.hyprctl.call_args_list:
+        if call.kwargs.get("base_command") == "notify":
+            args = call[0][0]
+            if "command-based scratchpad" in args:
+                found_error = True
+    assert found_error, "Should reject sending command-based scratchpad windows"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_auto_preserve_aspect(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    plugin = mocks.pyprland_instance.plugins["scratchpads"]
+
+    # Wait for plugin to be loaded
+    for _ in range(10):
+        if plugin:
+            break
+
+        await asyncio.sleep(0.1)
+
+        stash = plugin.scratches.get("stash")
+        assert stash is not None
+        assert stash.conf.get_bool("preserve_aspect") is True
+        assert stash.conf.get_bool("lazy") is True
+
+@pytest.mark.asyncio
+async def test_assign_window_resets_position(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
+
+    plugin = mocks.pyprland_instance.plugins["scratchpads"]
+    stash = plugin.scratches.get("stash")
+
+    # Simulate stale position data
+    stash.meta.extra_position["old_addr"] = (100, 200)
+    stash.monitor = "DP-1"
+
+    stash.assign_window(DYNAMIC_WINDOW)
+
+    assert stash.meta.extra_position == {}
+    assert stash.monitor == ""
 
