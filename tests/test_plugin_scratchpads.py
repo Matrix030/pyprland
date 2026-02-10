@@ -506,3 +506,31 @@ async def test_send_release_toggle(dynamic_scratchpads, subprocess_shell_mock, s
     assert stash.dynamic_window_addr == ""
 
 
+@pytest.mark.asyncio
+async def test_send_floating_preserves_state(dynamic_scratpads, sybprocess_shell_mock, server_fixture):
+    mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW_2]
+
+    #Focus a floating window
+    await mocks.send_event("activewindowv2>>DYNAMIC67890")
+    await asyncio.sleep(0.05)
+
+    await mocks.pypr("send stash")
+    await asyncio.sleep(0.1)
+
+    plugin = mocks.pyprland_instance.plugins["scratchpads"]
+    stash = plugin.scratches.get("stash")
+    assert stash.was_floating_before_send is True
+
+    # Release via run_release
+    mocks.hyprctl.reset_mock()
+    await mocks.pypr("release stash")
+    await asyncio.sleep(0.1)
+
+    call_set = gen_call_set(mocks.hyprctl.call_args_list)
+
+    # Should NOT settlile (was originally floating)
+    assert "settiled address:0xDYNAMIC67890" not in call_set
+    assert stash.dynamic_window_addr == ""
+
+
+
