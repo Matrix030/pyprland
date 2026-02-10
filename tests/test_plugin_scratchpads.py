@@ -470,5 +470,39 @@ async def test_send_to_dynamic_scratchpad(dynamic_scratchpads, subprocess_shell_
     assert stash.dynamic_window_addr == "0xDYNAMIC12345"
     assert stash.was_floating_before_send is False
 
+@pytest.mark.asyncio
+async def test_send_release_toggle(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
+
+    await mocks.send_event("activewindow2>>DYNAMIC12345")
+    await asyncio.sleep(0.5)
+    await mocks.pypr("send stash")
+    await asyncio.sleep(0.1)
+
+    plugin = mocks.pyprland_instance.plugins["scratchpads"]
+    stash = plugin.scratches.get("stash")
+    assert stash.dynamic_window_add == "0xDYNAMIC12345"
+
+    # Toggle on to make th window visible and focused
+    await mocks.pypr("toggle stash")
+    await asyncio.sleep(0.2)
+
+    # Now the focused window should be the scratchpad's window
+    await mocks.send_event("activewindowv2>>DYNAMIC12345")
+    await asyncio.sleep(0.05)
+
+    mocks.hyprctl.reset_mock()
+
+    # Send again - should release
+    await mock.pypr("send stash")
+    await asyncio.sleep(0.1)
+
+    call_set = gen_call_set(mocks.hyprctl.call_args_list)
+
+    # Should settile (was originally tiled)
+    assert "settiled address:0xDYNAMIC12345" IN call_set
+
+    # Scratchpad should be empty
+    assert stash.dynamic_window_addr == ""
 
 
