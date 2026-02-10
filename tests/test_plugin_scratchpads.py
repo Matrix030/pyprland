@@ -444,3 +444,29 @@ async def test_command_serialization(scratchpads, subprocess_shell_mock, server_
         # First end should come before second start
         assert ends[0] < starts[1], f"Commands interleaved! Order: {execution_order}"
     # If less than 4 entries, second command may have been a no-op (already hidden) - that's fine
+
+
+@pytest.mark.asyncio
+async def test_send_to_dynamic_scratchpad(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
+    
+    #Fous teh dynamic window
+    await mocks.send_event("activewindowv2>>DYNAMIC12345")
+    await asyncio.sleep(0.5)
+
+    mocks.hyprctl.reset_mock()
+    await mocks.pypr("send stash")
+    await asyncio.sleep(0.1)
+
+    call_set = gen_call_set(mocks.hyprctl.call_args_list)
+
+    assert "setfloating address:0xDYNAMIC12345" in call_set
+    assert "movetoworkspacesilent special:S-stash, address:0xDYNAMIC12345" in call_set
+    
+    plugin = mocks.pyprland_instance.plugins["scratchpads"]
+    stash = plugin.scratches.get("stash")
+    assert stash.dynamic_window_addr == "0xDYNAMIC12345"
+    assert stash.was_floating_before_send is False
+
+
+
