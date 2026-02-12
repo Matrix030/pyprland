@@ -273,6 +273,23 @@ async def test_attach_workspace_sanity(scratchpads, subprocess_shell_mock, serve
 
     assert moved_attached, "Attached window should be moved to scratchpad workspace on hide"
 
+@fixture
+def dynamic_scratchpads(monkeypatch, mocker):
+    d = {
+        "pyprland": {"plugins": ["scratchpads"]},
+        "scratchpads": {
+            "stash": {
+                "animation": "fromTop",
+                "size": "80% 80%",
+            },
+            "term": {
+                "command": "ls",
+                "lazy": True,
+                "class": "kitty-dropterm",
+            },
+        },
+    }
+    monkeypatch.setattr("tomllib.load", lambda x: d)
 
 DYNAMIC_WINDOW = {
     "address": "0xDYNAMIC12345",
@@ -494,7 +511,7 @@ async def test_command_serialization(scratchpads, subprocess_shell_mock, server_
         assert ends[0] < starts[1], f"Commands interleaved! Order: {execution_order}"
     # If less than 4 entries, second command may have been a no-op (already hidden) - that's fine
 
-
+# Dynamic scratchpad tests
 @pytest.mark.asyncio
 async def test_send_to_dynamic_scratchpad(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
     mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
