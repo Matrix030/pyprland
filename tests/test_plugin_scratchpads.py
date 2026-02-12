@@ -273,8 +273,10 @@ async def test_attach_workspace_sanity(scratchpads, subprocess_shell_mock, serve
 
     assert moved_attached, "Attached window should be moved to scratchpad workspace on hide"
 
+
 @fixture
 def dynamic_scratchpads(monkeypatch, mocker):
+    """Config with a dynamic scratchpad (no command, no class)."""
     d = {
         "pyprland": {"plugins": ["scratchpads"]},
         "scratchpads": {
@@ -290,6 +292,7 @@ def dynamic_scratchpads(monkeypatch, mocker):
         },
     }
     monkeypatch.setattr("tomllib.load", lambda x: d)
+
 
 DYNAMIC_WINDOW = {
     "address": "0xDYNAMIC12345",
@@ -339,6 +342,7 @@ DYNAMIC_WINDOW_2 = {
     "swallowing": "0x0",
     "focusHistoryID": 11,
 }
+
 
 CLIENT_CONFIG = [
     {
@@ -511,14 +515,18 @@ async def test_command_serialization(scratchpads, subprocess_shell_mock, server_
         assert ends[0] < starts[1], f"Commands interleaved! Order: {execution_order}"
     # If less than 4 entries, second command may have been a no-op (already hidden) - that's fine
 
-# Dynamic scratchpad tests
+
+# === Dynamic scratchpad tests ===
+
+
 @pytest.mark.asyncio
 async def test_send_to_dynamic_scratchpad(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """Send a tiled window to a dynamic scratchpad."""
     mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
-    
-    #Fous teh dynamic window
+
+    # Focus the dynamic window
     await mocks.send_event("activewindowv2>>DYNAMIC12345")
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.05)
 
     mocks.hyprctl.reset_mock()
     await mocks.pypr("send stash")
@@ -528,28 +536,31 @@ async def test_send_to_dynamic_scratchpad(dynamic_scratchpads, subprocess_shell_
 
     # Should float the window and move to special workspace
     assert "setfloating address:0xDYNAMIC12345" in call_set
-    assert "movetoworkspacesilent special:S-stash, address:0xDYNAMIC12345" in call_set
-    
-    #Verify Internal state
+    assert "movetoworkspacesilent special:S-stash,address:0xDYNAMIC12345" in call_set
+
+    # Verify internal state
     plugin = mocks.pyprland_instance.plugins["scratchpads"]
     stash = plugin.scratches.get("stash")
     assert stash.dynamic_window_addr == "0xDYNAMIC12345"
     assert stash.was_floating_before_send is False
 
+
 @pytest.mark.asyncio
 async def test_send_release_toggle(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """Sending the same window again releases it (toggle behavior)."""
     mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
 
-    await mocks.send_event("activewindow2>>DYNAMIC12345")
-    await asyncio.sleep(0.5)
+    # Focus and send
+    await mocks.send_event("activewindowv2>>DYNAMIC12345")
+    await asyncio.sleep(0.05)
     await mocks.pypr("send stash")
     await asyncio.sleep(0.1)
 
     plugin = mocks.pyprland_instance.plugins["scratchpads"]
     stash = plugin.scratches.get("stash")
-    assert stash.dynamic_window_add == "0xDYNAMIC12345"
+    assert stash.dynamic_window_addr == "0xDYNAMIC12345"
 
-    # Toggle on to make th window visible and focused
+    # Toggle on to make the window visible and focused
     await mocks.pypr("toggle stash")
     await asyncio.sleep(0.2)
 
@@ -558,25 +569,25 @@ async def test_send_release_toggle(dynamic_scratchpads, subprocess_shell_mock, s
     await asyncio.sleep(0.05)
 
     mocks.hyprctl.reset_mock()
-
-    # Send again - should release
-    await mock.pypr("send stash")
+    # Send again — should release
+    await mocks.pypr("send stash")
     await asyncio.sleep(0.1)
 
     call_set = gen_call_set(mocks.hyprctl.call_args_list)
 
     # Should settile (was originally tiled)
-    assert "settiled address:0xDYNAMIC12345" IN call_set
+    assert "settiled address:0xDYNAMIC12345" in call_set
 
     # Scratchpad should be empty
     assert stash.dynamic_window_addr == ""
 
 
 @pytest.mark.asyncio
-async def test_send_floating_preserves_state(dynamic_scratpads, sybprocess_shell_mock, server_fixture):
+async def test_send_floating_preserves_state(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """Floating windows stay floating after release."""
     mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW_2]
 
-    #Focus a floating window
+    # Focus a floating window
     await mocks.send_event("activewindowv2>>DYNAMIC67890")
     await asyncio.sleep(0.05)
 
@@ -594,13 +605,14 @@ async def test_send_floating_preserves_state(dynamic_scratpads, sybprocess_shell
 
     call_set = gen_call_set(mocks.hyprctl.call_args_list)
 
-    # Should NOT settlile (was originally floating)
+    # Should NOT settile (was originally floating)
     assert "settiled address:0xDYNAMIC67890" not in call_set
     assert stash.dynamic_window_addr == ""
 
 
 @pytest.mark.asyncio
 async def test_send_rejects_command_based_window(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """Cannot send a command-based scratchpad's window to a dynamic scratchpad."""
     mocks.json_commands_result["clients"] = CLIENT_CONFIG
 
     # Start the command-based scratchpad
@@ -609,8 +621,8 @@ async def test_send_rejects_command_based_window(dynamic_scratchpads, subprocess
     await asyncio.sleep(0.1)
 
     # Focus the term scratchpad window
-    await mocks.send_event("activewindowv2>>1234567890")
-    await asyncio.sleep(0.5)
+    await mocks.send_event("activewindowv2>>12345677890")
+    await asyncio.sleep(0.05)
 
     mocks.hyprctl.reset_mock()
     await mocks.pypr("send stash")
@@ -628,67 +640,13 @@ async def test_send_rejects_command_based_window(dynamic_scratchpads, subprocess
 
 @pytest.mark.asyncio
 async def test_dynamic_auto_preserve_aspect(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """Dynamic scratchpads auto-enable preserve_aspect."""
     plugin = mocks.pyprland_instance.plugins["scratchpads"]
 
     # Wait for plugin to be loaded
     for _ in range(10):
         if plugin:
             break
-
-        await asyncio.sleep(0.1)
-
-        stash = plugin.scratches.get("stash")
-        assert stash is not None
-        assert stash.conf.get_bool("preserve_aspect") is True
-        assert stash.conf.get_bool("lazy") is True
-
-@pytest.mark.asyncio
-async def test_assign_window_resets_position(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
-    mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
-
-    plugin = mocks.pyprland_instance.plugins["scratchpads"]
-    stash = plugin.scratches.get("stash")
-
-    # Simulate stale position data
-    stash.meta.extra_position["old_addr"] = (100, 200)
-    stash.monitor = "DP-1"
-
-    stash.assign_window(DYNAMIC_WINDOW)
-
-    assert stash.meta.extra_position == {}
-    assert stash.monitor == ""
-
-@pytest.mark.asyncio
-async def test_send_rejects_command_based_window(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
-    mocks.json_commands_result["clients"] = CLIENT_CONFIG
-
-    # Start the command-based scratchpad
-    await mocks.pypr("toggle term")
-    await _send_window_events()
-    await asyncio.sleep(0.1)
-
-    mocks.hyprctl.reset_mock()
-    await mocks.pypr("send stash")
-    await asyncio.sleep(0.1)
-
-    # Should get error notification
-    found_error = False
-    for call in mocks.hyprctl.call_args_list:
-        if call.kwargs.get("base_command") == "notify":
-            args = call[0][0]
-            if "command-based scratchpad" in args:
-                found_error = True
-    assert found_error, "Should reject sending command-based scratchpad windows"
-
-
-@pytest.mark.asyncio
-async def test_dynamic_auto_preserve_aspect(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
-    plugin = mocks.pyprland_instance.plugins["scratchpads"]
-
-    for _ in range(10):
-        if plugin:
-            break
-
         await asyncio.sleep(0.1)
 
     stash = plugin.scratches.get("stash")
@@ -696,8 +654,10 @@ async def test_dynamic_auto_preserve_aspect(dynamic_scratchpads, subprocess_shel
     assert stash.conf.get_bool("preserve_aspect") is True
     assert stash.conf.get_bool("lazy") is True
 
+
 @pytest.mark.asyncio
 async def test_assign_window_resets_position(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """assign_window clears extra_positions and resets monitor for fresh positioning."""
     mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
 
     plugin = mocks.pyprland_instance.plugins["scratchpads"]
@@ -712,8 +672,10 @@ async def test_assign_window_resets_position(dynamic_scratchpads, subprocess_she
     assert stash.meta.extra_positions == {}
     assert stash.monitor == ""
 
+
 @pytest.mark.asyncio
 async def test_close_window_clears_dynamic(dynamic_scratchpads, subprocess_shell_mock, server_fixture):
+    """Closing a dynamic window clears the assignment."""
     mocks.json_commands_result["clients"] = CLIENT_CONFIG + [DYNAMIC_WINDOW]
 
     # Send window to stash
@@ -721,7 +683,7 @@ async def test_close_window_clears_dynamic(dynamic_scratchpads, subprocess_shell
     await asyncio.sleep(0.05)
     await mocks.pypr("send stash")
     await asyncio.sleep(0.1)
-    
+
     plugin = mocks.pyprland_instance.plugins["scratchpads"]
     stash = plugin.scratches.get("stash")
     assert stash.dynamic_window_addr == "0xDYNAMIC12345"
