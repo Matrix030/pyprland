@@ -188,6 +188,9 @@ class Scratch:  # {{{
     async def is_alive(self) -> bool:
         """Is the process running ?."""
         if not self.have_command:
+            if self.is_dynamic:
+                # Dynamic scratchpad: alive only if a window is assigned
+                return bool(self.dynamic_window_addr)
             return True
         if self.conf.get_bool("process_tracking"):
             path = f"/proc/{self.pid}"
@@ -229,17 +232,18 @@ class Scratch:  # {{{
         return match_by, str(match_value) if not isinstance(match_value, (int, float)) else match_value
 
     def assign_window(self, client_info: ClientInfo) -> None:
-        """Assign a window as the primary window of this dynamic scratchpad
+        """Assign a window as the primary window of this dynamic scratchpad.
+
         Args:
             client_info: The client info for the window to assign
-            """
+        """
         self.was_floating_before_send = client_info.get("floating", False)
         self.dynamic_window_addr = client_info["address"]
         self.client_info = client_info
         self.meta.initialized = True
         # Reset position state so first show uses config size/position
         self.meta.extra_positions.clear()
-        self.monitor=""
+        self.monitor = ""
 
     def clear_dynamic_window(self) -> None:
         """Clear the dynamic window assignment."""
