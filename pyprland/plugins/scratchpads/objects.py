@@ -163,6 +163,17 @@ class Scratch:  # {{{
             return
         if self.have_command:
             await self.update_client_info()
+        elif self.is_dynamic:
+            if not self.dynamic_window_addr:
+                msg = f"No window assigned to dynamic scratchpad '{self.uid}' — use `pypr send {self.uid}` first"
+                raise RuntimeError(msg)
+            # Refresh client_info by address
+            client = await self.ctx.backend.get_client_props(addr=self.dynamic_window_addr)
+            if not client:
+                self.clear_dynamic_window()
+                msg = f"Assigned window {self.dynamic_window_addr} no longer exists"
+                raise RuntimeError(msg)
+            self.client_info = client
         else:
             m_client = await self.fetch_matching_client()
             if not m_client:
@@ -216,6 +227,27 @@ class Scratch:  # {{{
         if match_value is None:
             return match_by, ""
         return match_by, str(match_value) if not isinstance(match_value, (int, float)) else match_value
+
+    def assign_window(self, client_info: ClientInfo) -> None:
+        """Assign a window as the primary window of this dynamic scratchpad
+        Args:
+            client_info: The client info for the window to assign
+            """
+        self.was_floating_before_send = client_info.get("floating", False)
+        self.dynamic_window_addr = client_info["address"]
+        self.client_info = client_info
+        self.meta.initialized = True
+        # Reset position state so first show uses config size/position
+        self.meta.extra_positions.clear()
+        self.monitor=""
+
+    def clear_dynamic_window(self) -> None:
+        """Clear the dynamic window assignment."""
+        self.dynamic_window_addr = ""
+        self.was_floating_before_send = False
+        self.client_info = None
+        self.meta.initialized = False
+        self.visible = False
 
     def reset(self, pid: int) -> None:
         """Clear the object.
