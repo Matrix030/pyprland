@@ -53,6 +53,8 @@ class Scratch:  # {{{
     monitor = ""
     pid = -1
     excluded_scratches: list[str]
+    dynamic_window_addr: str = "" # address of dynamically assigned window (via `pypr send`)
+    was_floating_before_send: bool = False # whether the window was floating before being sent
 
     def __init__(self, uid: str, full_config: dict[str, Any], plugin: "Extension") -> None:
         """Initialize a scratchpad.
@@ -127,6 +129,9 @@ class Scratch:  # {{{
                 self.conf["match_by"] = "class"
         if self.conf.get_bool("close_on_hide"):
             self.conf["lazy"] = True
+        if not self.have_command and not self.conf.get("class"):
+            self.conf["preserve_aspect"] = True
+            self.conf["lazy"] = True
         if self.ctx.state.hyprland_version < VersionInfo(0, 39, 0):
             self.conf["allow_special_workspaces"] = False
 
@@ -142,6 +147,11 @@ class Scratch:  # {{{
     def have_command(self) -> bool:
         """Check if the command is provided."""
         return bool(self.conf.get("command"))
+
+    @property
+    def is_dynamic(self) -> bool:
+        """Check if this is a dynamic scratchpad (no command, no class)."""
+        return not self.have_command and not self.conf.get("class")
 
     async def initialize(self, ex: "_scratchpads_extension_m.Extension") -> None:
         """Initialize the scratchpad.
