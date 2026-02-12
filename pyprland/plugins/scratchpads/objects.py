@@ -290,7 +290,7 @@ class Scratch:  # {{{
             clients: The list of clients
         """
         if client_info is None:
-            if self.have_command:
+            if self.have_command or (self.is_dynamic and self.dynamic_window_addr):
                 client_info = await self.ctx.backend.get_client_props(addr=self.full_address, clients=clients)
             else:
                 client_info = await self.fetch_matching_client(clients=clients)
