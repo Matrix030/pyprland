@@ -53,8 +53,8 @@ class Scratch:  # {{{
     monitor = ""
     pid = -1
     excluded_scratches: list[str]
-    dynamic_window_addr: str = "" # address of dynamically assigned window (via `pypr send`)
-    was_floating_before_send: bool = False # whether the window was floating before being sent
+    dynamic_window_addr: str = ""  # address of dynamically assigned window (via `pypr send`)
+    was_floating_before_send: bool = False  # whether the window was floating before being sent
 
     def __init__(self, uid: str, full_config: dict[str, Any], plugin: "Extension") -> None:
         """Initialize a scratchpad.

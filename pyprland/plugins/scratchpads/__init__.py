@@ -1,18 +1,15 @@
 """Scratchpads addon."""
 
 import asyncio
-from concurrent.futures.thread import BrokenThreadPool
 import contextlib
 import json
 from functools import partial
 from pathlib import Path
-from typing import Awaitable, cast
-
-from pyprland.ipc_paths import IPC_FOLDER
+from typing import cast
 
 from ...adapters.units import convert_coords
 from ...aioops import TaskManager
-from ...common import MINIMUM_FULL_ADDR_LEN, is_rotated
+from ...common import IPC_FOLDER, MINIMUM_FULL_ADDR_LEN, is_rotated
 from ...models import ClientInfo, Environment, ReloadReason, VersionInfo
 from ..interface import Plugin
 from .common import FocusTracker, HideFlavors
@@ -31,7 +28,8 @@ from .schema import validate_scratchpad_config
 from .transitions import TransitionsMixin
 from .windowruleset import WindowRuleSet
 
-DYNAMIC_ASSIGNMENT_FILE = Path(IPC_FOLDER) / ".pyprland_scratch_assignment_json"
+DYNAMIC_ASSIGNMENTS_FILE = Path(IPC_FOLDER) / ".pyprland_scratch_assignments.json"
+
 
 class Extension(LifecycleMixin, EventsMixin, TransitionsMixin, Plugin, environments=[Environment.HYPRLAND]):
     """Makes your applications into dropdowns & togglable popups."""
@@ -66,7 +64,6 @@ class Extension(LifecycleMixin, EventsMixin, TransitionsMixin, Plugin, environme
         for scratch in self.scratches.values():
             if not scratch.is_dynamic or not scratch.dynamic_window_addr:
                 continue
-
             try:
                 await self.backend.move_window_to_workspace(scratch.dynamic_window_addr, target_workspace)
                 if not scratch.was_floating_before_send:
@@ -85,7 +82,7 @@ class Extension(LifecycleMixin, EventsMixin, TransitionsMixin, Plugin, environme
 
         # Save assignments (cleared for successfully restored windows, preserved for failed ones)
         self._save_dynamic_assignments()
-        
+
         async def die_in_piece(scratch: Scratch) -> None:
             if scratch.uid in self.procs:
                 proc = self.procs[scratch.uid]
@@ -179,8 +176,6 @@ class Extension(LifecycleMixin, EventsMixin, TransitionsMixin, Plugin, environme
         if not self._dynamic_recovery_done:
             await self._load_dynamic_assignments()
             self._dynamic_recovery_done = True
-
-
 
     async def _unset_windowrules(self, scratch: Scratch) -> None:
         """Unset the windowrules.
@@ -407,8 +402,110 @@ class Extension(LifecycleMixin, EventsMixin, TransitionsMixin, Plugin, environme
         # When swapping, auto-show the new window so the user doesn't need to toggle
         if auto_show:
             await self.run_show(uid)
-    
-            
+
+    async def _release_dynamic_window(self, scratch: Scratch, workspace: str | None = None) -> None:
+        """Release a dynamic window back to a workspace.
+
+        Args:
+            scratch: The scratchpad with a dynamic window to release
+            workspace: Target workspace (defaults to active workspace)
+        """
+        addr = scratch.dynamic_window_addr
+        old_addr = scratch.address
+        was_floating = scratch.was_floating_before_send
+
+        await self.backend.move_window_to_workspace(addr, workspace or self.state.active_workspace)
+
+        if not was_floating:
+            await self.backend.execute(f"settiled address:{addr}")
+
+        scratch.clear_dynamic_window()
+        if old_addr:
+            self.scratches.clear(addr=old_addr)
+
+        self._save_dynamic_assignments()
+
+    async def run_release(self, uid: str) -> None:
+        """<name> releases the window from dynamic scratchpad "name" back to the workspace.
+
+        Args:
+            uid: The scratchpad name
+
+        Example:
+            pypr release stash
+        """
+        scratch = self.scratches.get(uid)
+        if not scratch:
+            await self.backend.notify_error(f"Scratchpad '{uid}' not found")
+            return
+
+        if not scratch.is_dynamic:
+            await self.backend.notify_error(f"Scratchpad '{uid}' is not a dynamic scratchpad")
+            return
+
+        if not scratch.dynamic_window_addr:
+            await self.backend.notify_error(f"Scratchpad '{uid}' has no window assigned")
+            return
+
+        await self._release_dynamic_window(scratch)
+
+    def _save_dynamic_assignments(self) -> None:
+        """Save dynamic scratchpad assignments to persistence file."""
+        assignments = {}
+        for s in self.scratches.values():
+            if s.is_dynamic and s.dynamic_window_addr:
+                assignments[s.uid] = {"addr": s.dynamic_window_addr, "was_floating": s.was_floating_before_send}
+        try:
+            DYNAMIC_ASSIGNMENTS_FILE.write_text(json.dumps(assignments))
+        except OSError:
+            self.log.warning("Failed to save dynamic scratchpad assignments")
+
+    async def _load_dynamic_assignments(self) -> None:
+        """Restore dynamic windows from persistence file.
+
+        On daemon restart, moves previously-assigned windows out of special
+        workspaces back to a normal workspace so they're not stranded.
+        Assignments are discarded — the scratchpad starts empty.
+        """
+        if not DYNAMIC_ASSIGNMENTS_FILE.exists():
+            return
+        try:
+            assignments = json.loads(DYNAMIC_ASSIGNMENTS_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            self.log.warning("Failed to load dynamic scratchpad assignments")
+            return
+
+        target_workspace = self.state.active_workspace or "1"
+
+        for uid, entry in assignments.items():
+            # Support both old format (string addr) and new format (dict with addr + was_floating)
+            if isinstance(entry, str):
+                addr = entry
+                was_floating = True  # assume floating for old format (safe default)
+            else:
+                addr = entry["addr"]
+                was_floating = entry.get("was_floating", True)
+
+            scratch = self.scratches.get(uid)
+            if not scratch or not scratch.is_dynamic:
+                continue
+
+            # Verify window still exists
+            client_info = await self.backend.get_client_props(addr=addr)
+            if not client_info:
+                self.log.info("Dynamic assignment for '%s' (addr=%s) discarded — window no longer exists", uid, addr)
+                continue
+
+            # Move window out of special workspace to a normal workspace
+            self.log.info("Restoring dynamic window for '%s' (addr=%s) to workspace %s", uid, addr, target_workspace)
+            await self.backend.move_window_to_workspace(addr, target_workspace)
+            if not was_floating:
+                await self.backend.execute(f"settiled address:{addr}")
+
+        # Clear the persistence file — scratchpads start empty
+        with contextlib.suppress(OSError):
+            DYNAMIC_ASSIGNMENTS_FILE.unlink(missing_ok=True)
+
     async def run_toggle(self, uid_or_uids: str) -> None:
         """<name> toggles visibility of scratchpad "name" (supports multiple names).
 
