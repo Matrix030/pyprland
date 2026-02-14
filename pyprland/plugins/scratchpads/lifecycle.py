@@ -120,6 +120,23 @@ class LifecycleMixin:
             return False
         return True
 
+    async def _ensure_dynamic_alive(self, item: Scratch, uid: str) -> bool:
+        """Check if a dynamic scratchpad's assigned window still exists.
+
+        Args:
+            item: The scratchpad object
+            uid: The scratchpad name
+        """
+        if not item.dynamic_window_addr:
+            await self.backend.notify_error(f"No window assigned to '{uid}' — use `pypr send {uid}` first")
+            return False
+        client = await self.backend.get_client_props(addr=item.dynamic_window_addr)
+        if not client:
+            item.clear_dynamic_window()
+            await self.backend.notify_error(f"Assigned window for '{uid}' no longer exists")
+            return False
+        return True
+
     async def ensure_alive(self, uid: str) -> bool:
         """Ensure the scratchpad is started.
 
@@ -132,7 +149,7 @@ class LifecycleMixin:
         assert item
 
         if not item.have_command:
-            return True
+            return await self._ensure_dynamic_alive(item, uid) if item.is_dynamic else True
 
         if item.conf.get_bool("process_tracking"):
             if not await item.is_alive():
