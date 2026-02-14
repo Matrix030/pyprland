@@ -95,6 +95,10 @@ class EventsMixin:
                 scratch.extra_addr.remove(addr)
             if addr in scratch.meta.extra_positions:
                 del scratch.meta.extra_positions[addr]
+            # Clear dynamic assignment if this was the assigned window
+            if scratch.is_dynamic and scratch.dynamic_window_addr == addr:
+                scratch.clear_dynamic_window()
+                self.scratches.clear(addr=addr[2:])
 
     async def event_monitorremoved(self, monitor_name: str) -> None:
         """Hides scratchpads on the removed screen.

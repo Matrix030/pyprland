@@ -53,6 +53,8 @@ class Scratch:  # {{{
     monitor = ""
     pid = -1
     excluded_scratches: list[str]
+    dynamic_window_addr: str = ""  # address of dynamically assigned window (via `pypr send`)
+    was_floating_before_send: bool = False  # whether the window was floating before being sent
 
     def __init__(self, uid: str, full_config: dict[str, Any], plugin: "Extension") -> None:
         """Initialize a scratchpad.
@@ -127,6 +129,9 @@ class Scratch:  # {{{
                 self.conf["match_by"] = "class"
         if self.conf.get_bool("close_on_hide"):
             self.conf["lazy"] = True
+        if not self.have_command and not self.conf.get("class"):
+            self.conf["preserve_aspect"] = True
+            self.conf["lazy"] = True
         if self.ctx.state.hyprland_version < VersionInfo(0, 39, 0):
             self.conf["allow_special_workspaces"] = False
 
@@ -143,6 +148,11 @@ class Scratch:  # {{{
         """Check if the command is provided."""
         return bool(self.conf.get("command"))
 
+    @property
+    def is_dynamic(self) -> bool:
+        """Check if this is a dynamic scratchpad (no command, no class)."""
+        return not self.have_command and not self.conf.get("class")
+
     async def initialize(self, ex: "_scratchpads_extension_m.Extension") -> None:
         """Initialize the scratchpad.
 
@@ -153,6 +163,17 @@ class Scratch:  # {{{
             return
         if self.have_command:
             await self.update_client_info()
+        elif self.is_dynamic:
+            if not self.dynamic_window_addr:
+                msg = f"No window assigned to dynamic scratchpad '{self.uid}' — use `pypr send {self.uid}` first"
+                raise RuntimeError(msg)
+            # Refresh client_info by address
+            client = await self.ctx.backend.get_client_props(addr=self.dynamic_window_addr)
+            if not client:
+                self.clear_dynamic_window()
+                msg = f"Assigned window {self.dynamic_window_addr} no longer exists"
+                raise RuntimeError(msg)
+            self.client_info = client
         else:
             m_client = await self.fetch_matching_client()
             if not m_client:
@@ -167,6 +188,9 @@ class Scratch:  # {{{
     async def is_alive(self) -> bool:
         """Is the process running ?."""
         if not self.have_command:
+            if self.is_dynamic:
+                # Dynamic scratchpad: alive only if a window is assigned
+                return bool(self.dynamic_window_addr)
             return True
         if self.conf.get_bool("process_tracking"):
             path = f"/proc/{self.pid}"
@@ -207,6 +231,28 @@ class Scratch:  # {{{
             return match_by, ""
         return match_by, str(match_value) if not isinstance(match_value, (int, float)) else match_value
 
+    def assign_window(self, client_info: ClientInfo) -> None:
+        """Assign a window as the primary window of this dynamic scratchpad.
+
+        Args:
+            client_info: The client info for the window to assign
+        """
+        self.was_floating_before_send = client_info.get("floating", False)
+        self.dynamic_window_addr = client_info["address"]
+        self.client_info = client_info
+        self.meta.initialized = True
+        # Reset position state so first show uses config size/position
+        self.meta.extra_positions.clear()
+        self.monitor = ""
+
+    def clear_dynamic_window(self) -> None:
+        """Clear the dynamic window assignment."""
+        self.dynamic_window_addr = ""
+        self.was_floating_before_send = False
+        self.client_info = None
+        self.meta.initialized = False
+        self.visible = False
+
     def reset(self, pid: int) -> None:
         """Clear the object.
 
@@ -244,7 +290,7 @@ class Scratch:  # {{{
             clients: The list of clients
         """
         if client_info is None:
-            if self.have_command:
+            if self.have_command or (self.is_dynamic and self.dynamic_window_addr):
                 client_info = await self.ctx.backend.get_client_props(addr=self.full_address, clients=clients)
             else:
                 client_info = await self.fetch_matching_client(clients=clients)

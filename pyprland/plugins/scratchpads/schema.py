@@ -37,7 +37,7 @@ def _validate_animation(value: str) -> list[str]:
 # Schema for individual scratchpad configuration
 SCRATCHPAD_SCHEMA = ConfigItems(
     # Required
-    ConfigField("command", str, required=True, description="Command to run (omit for unmanaged scratchpads)", category="basic"),
+    ConfigField("command", str, default="", description="Command to run (omit for dynamic/unmanaged scratchpads)", category="basic"),
     # Basic
     ConfigField("class", str, default="", recommended=True, description="Window class for matching", category="basic"),
     ConfigField(
@@ -152,10 +152,6 @@ def validate_scratchpad_config(name: str, scratch_config: dict) -> list[str]:
     match_by = scratch_config.get("match_by", "pid")
     if match_by != "pid" and match_by not in scratch_config:
         errors.append(f"[{prefix}] match_by='{match_by}' requires '{match_by}' to be defined")
-
-    # Validate unmanaged scratchpads (no command) require class for matching
-    if not scratch_config.get("command") and not scratch_config.get("class"):
-        errors.append(f"[{prefix}] unmanaged scratchpads (no command) require 'class' to be defined")
 
     _validate_monitor_overrides(name, scratch_config, errors)
 

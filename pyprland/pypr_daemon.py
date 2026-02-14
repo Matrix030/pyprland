@@ -66,7 +66,7 @@ async def run_daemon() -> None:
         print("Interrupted")
     except asyncio.CancelledError:
         manager.log.critical("cancelled")
-    else:
+    finally:
         await manager.exit_plugins()
         if events_writer:
             assert isinstance(events_writer, asyncio.StreamWriter)
