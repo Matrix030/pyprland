@@ -1,6 +1,8 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
-from pyprland.plugins.stash import Extension
+from pyprland.plugins.stash import ONE_FRAME, Extension, StashDefinition, StashSlot
 from tests.conftest import make_extension
 
 
@@ -16,6 +18,14 @@ CONFIG = {
         "size": "24% 54%",
         "position": "76% 22%",
         "preserve_aspect": True,
+    },
+    "A": {
+        "animation": "fromBottom",
+        "size": "24% 54%",
+        "position": "76% 22%",
+        "preserve_aspect": False,
+        "offset": "100%",
+        "hide_delay": 0.2,
     },
 }
 
@@ -322,3 +332,129 @@ def test_validate_config_static_rejects_non_table_sections():
     errors = Extension.validate_config_static("stash", {"S": "bad"})
 
     assert errors == ["[stash] section 'S' must be a table"]
+
+
+def test_validate_config_static_rejects_invalid_animation():
+    bad = {"X": {**CONFIG["A"], "animation": "sideways"}}
+
+    errors = Extension.validate_config_static("stash", bad)
+
+    assert any("sideways" in e for e in errors)
+
+
+def test_offscreen_coords_per_direction(extension):
+    def off(animation):
+        slot = StashSlot(
+            definition=StashDefinition(name="x", animation=animation, size="", position="", preserve_aspect=False, offset="0px")
+        )
+        # on-screen target rect (x=100, y=200, w=240, h=432) on MONITOR (x=10, y=20, 1000x800)
+        return extension._offscreen_coords(slot, MONITOR, (100, 200, 240, 432))
+
+    assert off("fromtop") == (100, 20 - 432)
+    assert off("frombottom") == (100, 20 + 800)
+    assert off("fromleft") == (10 - 240, 200)
+    assert off("fromright") == (10 + 1000, 200)
+    assert off("fromtopleft") == (10 - 240, 20 - 432)
+    assert off("frombottomright") == (10 + 1000, 20 + 800)
+
+
+@pytest.mark.asyncio
+async def test_stash_show_animation_prepositions_offscreen_then_slides_in(extension, monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr("pyprland.plugins.stash.asyncio.sleep", fake_sleep)
+    extension.backend.execute_json.return_value = {
+        "address": "0xabc",
+        "floating": True,
+        "workspace": {"id": 1, "name": "1"},
+    }
+    await extension.run_stash_send("A")
+
+    extension.backend.reset_mock()
+
+    await extension.run_stash_toggle("A")
+
+    # noanim windowrule armed before the jump
+    extension.backend.execute.assert_any_call("windowrule no_anim on, match:tag pypr_noanim", base_command="keyword")
+    # off-screen pre-position (tag + jump) batched together, then untag
+    extension.backend.execute.assert_any_call(
+        [
+            "tagwindow +pypr_noanim address:0xabc",
+            "movewindowpixel exact 770 1252,address:0xabc",
+        ]
+    )
+    extension.backend.execute.assert_any_call("tagwindow -pypr_noanim address:0xabc")
+    # animated slide to the on-screen target
+    extension.backend.resize_window.assert_called_once_with("0xabc", 240, 432)
+    extension.backend.move_window.assert_called_once_with("0xabc", 770, 196)
+    extension.backend.pin_window.assert_called_once_with("0xabc")
+    extension.backend.focus_window.assert_called_once_with("0xabc")
+    assert ONE_FRAME in sleeps
+    assert extension._slots["A"].visible is True
+
+
+@pytest.mark.asyncio
+async def test_stash_hide_animation_slides_out_then_stashes(extension, monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr("pyprland.plugins.stash.asyncio.sleep", fake_sleep)
+    extension.backend.execute_json.return_value = {
+        "address": "0xabc",
+        "floating": True,
+        "workspace": {"id": 1, "name": "1"},
+    }
+    await extension.run_stash_send("A")
+    await extension.run_stash_toggle("A")
+
+    extension.backend.reset_mock()
+
+    await extension.run_stash_toggle("A")
+
+    extension.backend.move_window.assert_called_once_with("0xabc", 770, 1252)
+    extension.backend.pin_window.assert_called_once_with("0xabc")
+    extension.backend.move_window_to_workspace.assert_called_once_with("0xabc", "special:st-A", silent=True)
+    assert 0.2 in sleeps
+    assert extension._slots["A"].visible is False
+
+
+@pytest.mark.asyncio
+async def test_noanim_rule_registered_only_once(extension, monkeypatch):
+    monkeypatch.setattr("pyprland.plugins.stash.asyncio.sleep", AsyncMock())
+    extension.backend.execute_json.return_value = {
+        "address": "0xabc",
+        "floating": True,
+        "workspace": {"id": 1, "name": "1"},
+    }
+    await extension.run_stash_send("A")
+    await extension.run_stash_toggle("A")  # show
+    await extension.run_stash_toggle("A")  # hide
+    await extension.run_stash_toggle("A")  # show again
+
+    rule_calls = [
+        call
+        for call in extension.backend.execute.call_args_list
+        if call.args and call.args[0] == "windowrule no_anim on, match:tag pypr_noanim"
+    ]
+    assert len(rule_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_stash_without_animation_does_not_arm_noanim(extension):
+    extension.backend.execute_json.return_value = {
+        "address": "0xabc",
+        "floating": False,
+        "workspace": {"id": 1, "name": "1"},
+    }
+    await extension.run_stash_send("S")
+
+    extension.backend.reset_mock()
+
+    await extension.run_stash_toggle("S")
+
+    extension.backend.execute.assert_not_called()

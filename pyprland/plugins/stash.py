@@ -2,23 +2,64 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
-from ..adapters.units import convert_coords
-from ..models import Environment, ReloadReason
+from ..adapters.units import convert_coords, convert_monitor_dimension
+from ..models import Environment, MonitorInfo, ReloadReason
 from ..validation import ConfigField, ConfigItems, ConfigValidator
 from .interface import Plugin
 
 STASH_PREFIX = "st-"
 PAIR_SIZE = 2
+ONE_FRAME = 1 / 50  # minimum delay to let the backend process the off-screen pre-position
+
+# Single source of truth for valid animation values (camelCase for user-facing display).
+ANIMATION_CHOICES: tuple[str, ...] = (
+    "",
+    "fromTop",
+    "fromBottom",
+    "fromLeft",
+    "fromRight",
+    "fromTopLeft",
+    "fromTopRight",
+    "fromBottomLeft",
+    "fromBottomRight",
+)
+
+_ANIMATION_VALID = {value.lower() for value in ANIMATION_CHOICES}
+
+
+def normalize_animation(value: str) -> str:
+    """Normalize an animation value: lowercase and strip '-', '_' and spaces."""
+    return value.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+
+def _validate_animation(value: Any) -> list[str]:
+    """Case-insensitive animation validation (ignores '-', '_' and spaces)."""
+    if not isinstance(value, str) or normalize_animation(value) not in _ANIMATION_VALID:
+        opts = ", ".join(repr(v) for v in ANIMATION_CHOICES if v)
+        return [f"invalid value '{value}' -> Valid: '', {opts}"]
+    return []
+
 
 STASH_SECTION_SCHEMA = ConfigItems(
-    ConfigField("animation", str, default="", description="Reserved animation setting", category="basic"),
+    ConfigField(
+        "animation",
+        str,
+        default="",
+        description="Slide-in/out animation direction (e.g. 'fromBottom'); empty disables animation",
+        choices=list(ANIMATION_CHOICES),
+        validator=_validate_animation,
+        category="basic",
+    ),
     ConfigField("size", str, required=True, description="Overlay size like '24% 54%'", category="positioning"),
     ConfigField("position", str, required=True, description="Overlay position like '76% 22%'", category="positioning"),
+    ConfigField("offset", str, default="100%", description="Animation slide distance beyond the screen edge", category="positioning"),
     ConfigField("preserve_aspect", bool, default=False, description="Keep size and position across shows", category="behavior"),
+    ConfigField("hide_delay", float, default=0.2, description="Delay (seconds) for the hide animation to finish", category="behavior"),
 )
 
 
@@ -31,6 +72,8 @@ class StashDefinition:
     size: str
     position: str
     preserve_aspect: bool
+    offset: str = "100%"
+    hide_delay: float = 0.2
 
 
 @dataclass
@@ -62,6 +105,7 @@ class Extension(Plugin, environments=[Environment.HYPRLAND]):
         super().__init__(name)
         self._slots: dict[str, StashSlot] = {}
         self._addr_to_stash: dict[str, str] = {}
+        self._noanim_registered = False
 
     def validate_config(self) -> list[str]:
         """Validate nested stash sections."""
@@ -157,10 +201,12 @@ class Extension(Plugin, environments=[Environment.HYPRLAND]):
             slot = previous.get(stash_name)
             definition = StashDefinition(
                 name=stash_name,
-                animation=str(stash_config.get("animation", "")),
+                animation=normalize_animation(str(stash_config.get("animation", ""))),
                 size=str(stash_config["size"]),
                 position=str(stash_config["position"]),
                 preserve_aspect=bool(stash_config.get("preserve_aspect", False)),
+                offset=str(stash_config.get("offset", "100%")),
+                hide_delay=float(stash_config.get("hide_delay", 0.2)),
             )
             if slot is None:
                 slot = StashSlot(definition=definition)
@@ -197,7 +243,10 @@ class Extension(Plugin, environments=[Environment.HYPRLAND]):
             return
 
         await self.backend.move_window_to_workspace(slot.address, self.state.active_workspace, silent=True)
-        await self._apply_geometry(slot)
+        if slot.definition.animation:
+            await self._show_animated(slot)
+        else:
+            await self._apply_geometry(slot)
         await self.backend.pin_window(slot.address)
         await self.backend.focus_window(slot.address)
         slot.visible = True
@@ -207,6 +256,8 @@ class Extension(Plugin, environments=[Environment.HYPRLAND]):
             return
 
         await self._capture_geometry(slot)
+        if slot.definition.animation and slot.visible:
+            await self._hide_animated(slot)
         if slot.visible:
             await self.backend.pin_window(slot.address)
         await self.backend.move_window_to_workspace(slot.address, slot.workspace, silent=True)
@@ -275,11 +326,8 @@ class Extension(Plugin, environments=[Environment.HYPRLAND]):
         base_y = int(monitor["y"])
         slot.saved_offset = (int(position[0]) - base_x, int(position[1]) - base_y)
 
-    async def _apply_geometry(self, slot: StashSlot) -> None:
-        monitor = await self.get_focused_monitor_or_warn("stash geometry")
-        if monitor is None:
-            return
-
+    def _compute_geometry(self, slot: StashSlot, monitor: MonitorInfo) -> tuple[int, int, int, int]:
+        """Return the on-screen ``(x, y, width, height)`` target for the overlay."""
         base_x = int(monitor["x"])
         base_y = int(monitor["y"])
 
@@ -293,5 +341,80 @@ class Extension(Plugin, environments=[Environment.HYPRLAND]):
             x += base_x
             y += base_y
 
+        return x, y, width, height
+
+    def _offscreen_coords(self, slot: StashSlot, monitor: MonitorInfo, geometry: tuple[int, int, int, int]) -> tuple[int, int]:
+        """Return the off-screen ``(x, y)`` start/end point for the slide animation.
+
+        The window is pushed fully past the monitor edge matching the animation
+        direction; non-animated axes keep the on-screen target coordinate.
+        ``geometry`` is the on-screen ``(x, y, width, height)`` target.
+        """
+        x, y, width, height = geometry
+        animation = slot.definition.animation
+        mon_x = int(monitor["x"])
+        mon_y = int(monitor["y"])
+        mon_w = int(monitor["width"])
+        mon_h = int(monitor["height"])
+        off_x = convert_monitor_dimension(slot.definition.offset, width, monitor)
+        off_y = convert_monitor_dimension(slot.definition.offset, height, monitor)
+
+        target_x, target_y = x, y
+        if "left" in animation:
+            target_x = mon_x - width - off_x
+        elif "right" in animation:
+            target_x = mon_x + mon_w + off_x
+        if "top" in animation:
+            target_y = mon_y - height - off_y
+        elif "bottom" in animation:
+            target_y = mon_y + mon_h + off_y
+        return target_x, target_y
+
+    async def _ensure_noanim_rule(self) -> None:
+        """Register the ``pypr_noanim`` windowrule once (idempotent across plugins)."""
+        if self._noanim_registered:
+            return
+        await self.backend.execute("windowrule no_anim on, match:tag pypr_noanim", base_command="keyword")
+        self._noanim_registered = True
+
+    async def _apply_geometry(self, slot: StashSlot) -> None:
+        monitor = await self.get_focused_monitor_or_warn("stash geometry")
+        if monitor is None:
+            return
+
+        x, y, width, height = self._compute_geometry(slot, monitor)
         await self.backend.resize_window(slot.address, width, height)
         await self.backend.move_window(slot.address, x, y)
+
+    async def _show_animated(self, slot: StashSlot) -> None:
+        monitor = await self.get_focused_monitor_or_warn("stash geometry")
+        if monitor is None:
+            await self._apply_geometry(slot)
+            return
+
+        geometry = self._compute_geometry(slot, monitor)
+        x, y, width, height = geometry
+        await self.backend.resize_window(slot.address, width, height)
+
+        await self._ensure_noanim_rule()
+        off_x, off_y = self._offscreen_coords(slot, monitor, geometry)
+        addr = slot.address
+        await self.backend.execute(
+            [
+                f"tagwindow +pypr_noanim address:{addr}",
+                f"movewindowpixel exact {off_x} {off_y},address:{addr}",
+            ]
+        )
+        await asyncio.sleep(ONE_FRAME)
+        await self.backend.execute(f"tagwindow -pypr_noanim address:{addr}")
+        await self.backend.move_window(addr, x, y)
+
+    async def _hide_animated(self, slot: StashSlot) -> None:
+        monitor = await self.get_focused_monitor_or_warn("stash geometry")
+        if monitor is None:
+            return
+
+        off_x, off_y = self._offscreen_coords(slot, monitor, self._compute_geometry(slot, monitor))
+        await self.backend.move_window(slot.address, off_x, off_y)
+        if slot.definition.hide_delay:
+            await asyncio.sleep(slot.definition.hide_delay)

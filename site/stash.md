@@ -29,6 +29,15 @@ bind = $mainMod SHIFT, C, exec, pypr stash_send   C
 
 The first show uses the configured `size` and `position`. If `preserve_aspect = true`, later hide/show cycles keep the live size and position you last left the stash at.
 
+### Animation
+
+Set `animation` to make the overlay slide in on show and slide out on hide. Valid directions are `fromTop`, `fromBottom`, `fromLeft`, `fromRight`, `fromTopLeft`, `fromTopRight`, `fromBottomLeft` and `fromBottomRight` (case-insensitive; `-`, `_` and spaces are ignored). Leave it empty (the default) for an instant, non-animated show/hide.
+
+- `offset` controls how far past the screen edge the window starts/ends the slide (default `100%`, relative to the window size; also accepts pixel values like `400px`).
+- `hide_delay` is how long (in seconds, default `0.2`) the daemon waits for the slide-out to finish before tucking the window back into its hidden workspace.
+
+Animations require Hyprland (the plugin registers a `no_anim` window rule for an internal tag the first time an animation runs).
+
 ## Commands
 
 <PluginCommands plugin="stash" />
@@ -44,7 +53,7 @@ The first show uses the configured `size` and `position`. If `preserve_aspect = 
 plugins = ["stash"]
 
 [stash.S]
-animation = ""
+animation = "fromBottom"
 size = "24% 54%"
 position = "76% 22%"
 preserve_aspect = true
@@ -58,6 +67,6 @@ preserve_aspect = true
 
 ## Notes
 
-- `animation` is currently reserved and does not change behavior yet.
+- `animation` slides the overlay in/out from the chosen edge; leave it empty for an instant show/hide. See [Animation](#animation) for `offset` and `hide_delay`.
 - Stash windows are backed by hidden `special:st-<name>` workspaces when not shown.
 - During a clean `pypr` shutdown, stash windows are released back to the active workspace as a best effort cleanup.
