@@ -17,7 +17,7 @@ Contributions, suggestions, bug reports and comments are welcome.
 
 <details>
 <summary>
-About Pyprland (latest stable is: <b>3.3.1</b>)
+About Pyprland (latest stable is: <b>3.4.x</b>)
 </summary>
 
 [![Packaging Status](https://repology.org/badge/vertical-allrepos/pyprland.svg)](https://repology.org/project/pyprland/versions)
